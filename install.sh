@@ -3,8 +3,10 @@ set -e
 
 APP="leastBOT"
 BIN="/usr/local/bin/leastbot"
-REPO="leastping/leastBOT"
-RAW="https://raw.githubusercontent.com/${REPO}/main/leastbot.py"
+
+REPO="mobin-shahhoseini/leastBOT"
+BRANCH="main"
+RAW="https://raw.githubusercontent.com/${REPO}/${BRANCH}/leastbot.py"
 
 echo "[+] Installing ${APP} ..."
 
@@ -17,12 +19,10 @@ export DEBIAN_FRONTEND=noninteractive
 apt update -y
 apt install -y python3 curl openssh-client autossh iproute2
 
-echo "[+] Downloading script ..."
+echo "[+] Downloading leastBOT script ..."
 curl -fsSL "${RAW}" -o "${BIN}"
-
 chmod +x "${BIN}"
 
 echo
 echo "[✓] Done!"
 echo "[*] Run: leastbot"
-echo
