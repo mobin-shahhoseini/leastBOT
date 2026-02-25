@@ -24,9 +24,7 @@
 
 ---
 
-## 🧠 معماری عملکرد
-
-## ✨ امکانات
+## 🧠 معماری عملکرد / ✨ امکانات
 
 - ✅ نصب خودکار autossh
 - ✅ ساخت خودکار SSH Key
@@ -165,10 +163,12 @@ journalctl -u leastbot-reverse-PORT -n 100
 ---
 
 📂 ساختار پروژه
+
 leastBOT/
 ├── leastbot.py
 ├── install.sh
 └── README.md
+
 🔐 امنیت
 
 استفاده از SSH Key
