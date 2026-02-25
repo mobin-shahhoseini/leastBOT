@@ -3,7 +3,7 @@
 
 """
 leastBOT - Reverse SSH Tunnel Manager
-Developer: @leastping
+Developer: @leastping I mobin-shahhoseini
 Updates: https://t.me/leastping
 
 Finglish:
@@ -21,7 +21,6 @@ import re
 import sys
 import time
 import shutil
-import stat
 import subprocess
 from pathlib import Path
 from urllib.request import urlopen, Request
@@ -32,11 +31,11 @@ from urllib.request import urlopen, Request
 __app__ = "leastBOT"
 __version__ = "1.0.0"
 
-# >>>>> IMPORTANT: repo ro inja set kon (USERNAME/REPO)
-GITHUB_REPO = "leastping/leastBOT"
-
-RAW_MAIN_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/leastbot.py"
-INSTALL_SH_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/install.sh"
+# IMPORTANT: repo ro inja set kon (USERNAME/REPO)
+GITHUB_REPO = "mobin-shahhoseini/leastBOT"
+BRANCH = "main"
+RAW_MAIN_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{BRANCH}/leastbot.py"
+INSTALL_SH_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{BRANCH}/install.sh"
 
 SERVICE_DIR = "/etc/systemd/system"
 CACHE_DIR = Path("/var/lib/leastbot")
@@ -143,7 +142,6 @@ def valid_port(s):
 # Auto Update
 # =========================
 def parse_version(v):
-    # "1.2.3" -> (1,2,3)
     try:
         return tuple(int(x) for x in v.strip().split("."))
     except:
@@ -168,7 +166,6 @@ def can_check_updates_daily():
         return True
     try:
         last = int(stamp.read_text().strip())
-        # 24h
         return (now - last) > 86400
     except:
         return True
@@ -183,6 +180,7 @@ def self_update(force=False):
 
         remote_ver, remote_txt = get_remote_version()
         mark_checked()
+
         if not remote_ver:
             print(c("! Update check fail shod (remote version peyda nashod).", "yellow"))
             return
@@ -197,7 +195,9 @@ def self_update(force=False):
             print(c("Update cancel shod.", "yellow"))
             return
 
-        script_path = Path(sys.argv[0]).resolve()
+        installed_path = Path("/usr/local/bin/leastbot")
+        script_path = installed_path if installed_path.exists() else Path(sys.argv[0]).resolve()
+
         if not script_path.exists():
             print(c("! Nemitoonam script path ro peyda konam.", "red"))
             return
@@ -205,14 +205,11 @@ def self_update(force=False):
         backup = script_path.with_suffix(script_path.suffix + ".bak")
         shutil.copy2(script_path, backup)
 
-        # write new
         tmp = script_path.with_suffix(".tmp")
         tmp.write_text(remote_txt, encoding="utf-8")
 
-        # preserve exec bit
         mode = script_path.stat().st_mode
         tmp.chmod(mode)
-
         tmp.replace(script_path)
 
         print(c(f"✓ Update ok shod. Backup: {backup}", "green"))
@@ -282,7 +279,7 @@ def test_ssh(user, host, ssh_port):
 def service_name_for_port(port):
     return f"leastbot-reverse-{port}.service"
 
-def write_service(remote_user, remote_ip, port, local_host="127.0.0.1"):
+def write_service(remote_user, remote_ip, ssh_port, port, local_host="127.0.0.1"):
     svc = service_name_for_port(port)
     service_path = f"{SERVICE_DIR}/{svc}"
 
@@ -297,10 +294,12 @@ ExecStart=/usr/bin/autossh -M 0 -N \\
   -o ServerAliveInterval=30 \\
   -o ServerAliveCountMax=3 \\
   -o ExitOnForwardFailure=yes \\
+  -p {ssh_port} \\
   -R 0.0.0.0:{port}:{local_host}:{port} \\
   {remote_user}@{remote_ip}
 Restart=always
-RestartSec=5
+RestartSec=3
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
@@ -428,7 +427,7 @@ def mode_iran():
         print(c("✗ Test SSH fail shod. aval SSH ro dorost kon, bad dobare run kon.", "red"))
         return
 
-    write_service(remote_user, remote_ip, port)
+    write_service(remote_user, remote_ip, ssh_port, port)
     systemd_enable_start(port)
 
     print(c("\n✅ Done!", "green"))
@@ -497,7 +496,6 @@ def main():
 
     spinner("Starting leastBOT", seconds=1.1)
 
-    # auto update check (1 bar dar 24 saat)
     print(c("Checking updates (daily)...", "dim"))
     self_update(force=False)
 
