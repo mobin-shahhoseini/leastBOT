@@ -6,6 +6,7 @@ BIN="/usr/local/bin/leastbot"
 
 REPO="mobin-shahhoseini/leastBOT"
 BRANCH="main"
+
 RAW_PY="https://raw.githubusercontent.com/${REPO}/${BRANCH}/leastbot.py"
 RAW_INSTALL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/install.sh"
 
@@ -32,6 +33,7 @@ apt install -y python3 curl openssh-client autossh iproute2
 echo "[+] Checking for leastbot.py updates ..."
 TMP_PY="${BIN}.tmp"
 
+# اگر BIN وجود نداشته باشه یا ریموت جدیدتر باشه، curl فایل tmp رو می‌سازه
 if curl -fsSL -z "${BIN}" -o "${TMP_PY}" "${RAW_PY}"; then
   if [ -f "${TMP_PY}" ]; then
     mv "${TMP_PY}" "${BIN}"
@@ -47,45 +49,47 @@ else
   rm -f "${TMP_PY}" 2>/dev/null || true
 fi
 
-
+# -------------------------
+# 2) Install launcher to avoid re-downloading install.sh every time
+# -------------------------
 echo "[+] Installing launcher: ${LAUNCHER}"
 
-cat > "${LAUNCHER}" <<EOF
+cat > "${LAUNCHER}" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP="${APP}"
-REPO="${REPO}"
-BRANCH="${BRANCH}"
-URL="https://raw.githubusercontent.com/\${REPO}/\${BRANCH}/install.sh"
+APP="leastBOT"
+REPO="mobin-shahhoseini/leastBOT"
+BRANCH="main"
+URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/install.sh"
 
-CACHE_DIR="${CACHE_DIR}"
-CACHE_SH="${CACHE_INSTALL}"
+CACHE_DIR="/var/cache/leastbot"
+CACHE_SH="${CACHE_DIR}/install.sh"
 
-mkdir -p "\${CACHE_DIR}"
+mkdir -p "$CACHE_DIR"
 
-echo "[+] \${APP} launcher started..."
+echo "[+] ${APP} launcher started..."
 
-# First-time download
-if [ ! -f "\${CACHE_SH}" ]; then
+# First-time download (only if missing)
+if [ ! -f "$CACHE_SH" ]; then
   echo "[+] First time download of install.sh..."
-  curl -fsSL -o "\${CACHE_SH}" "\${URL}"
-  chmod +x "\${CACHE_SH}"
+  curl -fsSL -o "$CACHE_SH" "$URL"
+  chmod +x "$CACHE_SH"
 fi
 
-# Update only if newer (no useless downloads)
-if curl -fsSL -z "\${CACHE_SH}" -o "\${CACHE_SH}.tmp" "\${URL}"; then
-  if [ -f "\${CACHE_SH}.tmp" ]; then
-    mv "\${CACHE_SH}.tmp" "\${CACHE_SH}"
-    chmod +x "\${CACHE_SH}"
+# Update only if newer (avoid useless downloads)
+if curl -fsSL -z "$CACHE_SH" -o "${CACHE_SH}.tmp" "$URL"; then
+  if [ -f "${CACHE_SH}.tmp" ]; then
+    mv "${CACHE_SH}.tmp" "$CACHE_SH"
+    chmod +x "$CACHE_SH"
     echo "[✓] install.sh updated."
   fi
 else
   echo "[!] Could not check for update (using cached version)."
-  rm -f "\${CACHE_SH}.tmp" 2>/dev/null || true
+  rm -f "${CACHE_SH}.tmp" 2>/dev/null || true
 fi
 
-exec bash "\${CACHE_SH}"
+exec bash "$CACHE_SH"
 EOF
 
 chmod +x "${LAUNCHER}"
@@ -93,4 +97,5 @@ chmod +x "${LAUNCHER}"
 echo
 echo "[✓] Done!"
 echo "[*] Run bot: leastbot"
-echo "[*] Next time update/install (without re-downloading install.sh): leastbot-install"
+echo "[*] Next time update/install (recommended): leastbot-install"
+echo "[*] (This avoids re-downloading install.sh every time.)"
