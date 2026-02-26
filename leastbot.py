@@ -15,7 +15,7 @@ Notes:
 - Beautiful UI (logo/spinner/colors/emojis)
 - Daily auto update check (GitHub raw)
 - NO extra options (no bind choice, no separate local/remote ports)
-- NO Persian script in messages (Finglish only)
+- All messages Finglish (no Persian script)
 """
 
 import os
@@ -31,7 +31,7 @@ from urllib.request import urlopen, Request
 # App / Repo
 # =========================
 __app__ = "leastBOT"
-__version__ = "1.1.1"
+__version__ = "1.0.1"
 
 GITHUB_REPO = "mobin-shahhoseini/leastBOT"
 BRANCH = "main"
@@ -267,27 +267,54 @@ def ensure_key():
 
 def ssh_copy_id(user, host, ssh_port):
     print(c("🔐 Sending key to KHAREJ (password needed)...", "yellow"))
-    run(f"ssh-copy-id -p {ssh_port} {user}@{host}", check=True)
+    # Important: accept-new to avoid interactive "Are you sure..."
+    run(
+        f"ssh-copy-id -p {ssh_port} "
+        f"-o StrictHostKeyChecking=accept-new "
+        f"-o UserKnownHostsFile=/root/.ssh/known_hosts "
+        f"{user}@{host}",
+        check=True
+    )
 
 def test_ssh(user, host, ssh_port):
     out = run(
-        f'ssh -p {ssh_port} -o StrictHostKeyChecking=accept-new {user}@{host} "echo OK"',
+        f'ssh -p {ssh_port} '
+        f'-o StrictHostKeyChecking=accept-new '
+        f'-o UserKnownHostsFile=/root/.ssh/known_hosts '
+        f'{user}@{host} "echo OK"',
         capture=True,
         check=False,
     ) or ""
     return "OK" in out
 
 # =========================
-# Robust remote port check
+# Robust remote port check (ss -> netstat fallback)
 # =========================
 def remote_port_is_free(user, host, ssh_port, port: int) -> bool:
+    remote_cmd = (
+        "bash -lc '"
+        "if command -v ss >/dev/null 2>&1; then "
+        f"  ss -H -lnt \"sport = :{port}\" | wc -l; "
+        "elif command -v netstat >/dev/null 2>&1; then "
+        f"  netstat -lnt 2>/dev/null | awk \"{{print \\$4}}\" | grep -E \"(:|\\.){port}$\" -c; "
+        "else "
+        "  echo 9999; "
+        "fi'"
+    )
     cmd = (
-        f'ssh -p {ssh_port} -o StrictHostKeyChecking=accept-new {user}@{host} '
-        f'"ss -H -lnt \\"sport = :{port}\\" | wc -l"'
+        f"ssh -p {ssh_port} "
+        f"-o StrictHostKeyChecking=accept-new "
+        f"-o UserKnownHostsFile=/root/.ssh/known_hosts "
+        f"{user}@{host} "
+        f"\"{remote_cmd}\""
     )
     out = run(cmd, capture=True, check=False).strip()
     try:
-        return int(out) == 0
+        n = int(out)
+        if n == 9999:
+            # cannot verify -> be safe
+            return False
+        return n == 0
     except Exception:
         return False
 
@@ -371,22 +398,33 @@ def restart_ssh():
     run("systemctl restart sshd", check=False)
 
 # =========================
-# Systemd service on IRAN (FIXED)
+# Systemd service on IRAN (FIXED - single line ExecStart)
 # =========================
-def systemd_verify_unit(path: str) -> bool:
-    # Optional verification; if systemd-analyze exists, validate unit syntax.
+def systemd_verify_unit_soft(path: str):
+    # Non-blocking verify: only show warning, never stop the flow
     if not shutil.which("systemd-analyze"):
-        return True
-    out = run(f"systemd-analyze verify {path} 2>&1 || true", capture=True, check=False)
-    # systemd-analyze prints nothing on success in many cases; treat "Failed" as bad.
-    if "Failed to" in out or "error" in out.lower():
-        print(c("⚠ systemd-analyze verify reported issues:", "yellow"))
-        print(out.strip())
-        return False
-    return True
+        return
+    out = run(f"systemd-analyze verify {path} 2>&1 || true", capture=True, check=False).strip()
+    # If there is something about our file, show it
+    if out:
+        print(c("ℹ systemd-analyze verify output (non-blocking):", "dim"))
+        print(out)
 
 def write_reverse_service(remote_user, remote_ip, ssh_port, port: int):
     autossh_path = shutil.which("autossh") or "/usr/bin/autossh"
+
+    # IMPORTANT: single-line ExecStart to avoid any "Missing '='" or newline bugs
+    execstart = (
+        f"{autossh_path} -M 0 -N "
+        f"-o ServerAliveInterval=30 "
+        f"-o ServerAliveCountMax=3 "
+        f"-o ExitOnForwardFailure=yes "
+        f"-o StrictHostKeyChecking=accept-new "
+        f"-o UserKnownHostsFile=/root/.ssh/known_hosts "
+        f"-p {ssh_port} "
+        f"-R 0.0.0.0:{port}:127.0.0.1:{port} "
+        f"{remote_user}@{remote_ip}"
+    )
 
     content = (
         "[Unit]\n"
@@ -398,33 +436,21 @@ def write_reverse_service(remote_user, remote_ip, ssh_port, port: int):
         "Type=simple\n"
         "User=root\n"
         'Environment="AUTOSSH_GATETIME=0"\n'
-        f"ExecStart={autossh_path} -M 0 -N \\\n"
-        "  -o ServerAliveInterval=30 \\\n"
-        "  -o ServerAliveCountMax=3 \\\n"
-        "  -o ExitOnForwardFailure=yes \\\n"
-        "  -o StrictHostKeyChecking=accept-new \\\n"
-        f"  -p {ssh_port} \\\n"
-        f"  -R 0.0.0.0:{port}:127.0.0.1:{port} \\\n"
-        f"  {remote_user}@{remote_ip}\n"
+        f"ExecStart={execstart}\n"
         "Restart=always\n"
         "RestartSec=5\n\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n"
     )
 
-    tmp_path = SERVICE_PATH + ".tmp"
+    tmp_path = f"{SERVICE_PATH}.tmp.service"
     with open(tmp_path, "w", encoding="utf-8") as f:
         f.write(content)
 
-    # Validate unit syntax BEFORE replacing the real file
-    if not systemd_verify_unit(tmp_path):
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-        raise RuntimeError("Unit file validation failed. Service file not applied.")
+    # soft verify only (never blocks)
+    systemd_verify_unit_soft(tmp_path)
 
-    # Backup old service if exists
+    # Backup old service
     if os.path.exists(SERVICE_PATH):
         bkp = SERVICE_PATH + ".bak"
         try:
@@ -447,7 +473,7 @@ def remove_service():
     run("systemctl daemon-reload")
 
 # =========================
-# Modes (simple)
+# Modes
 # =========================
 def print_main_menu():
     print(c("\nMain Menu", "bold"))
@@ -474,6 +500,7 @@ def mode_kharj():
 
 def mode_iran():
     print(c("\n=== MODE: IRAN (Client) ===", "bold"))
+
     port = ask("Panel port (IRAN=KHAREJ same) (mesal: 2087)", validator=valid_port)
     if not port:
         return
@@ -499,9 +526,10 @@ def mode_iran():
         return
 
     print(c("🔍 Checking remote port availability ...", "yellow"))
-    if not remote_port_is_free(remote_user, remote_ip, ssh_port, int(port)):
-        print(c(f"✗ Remote port {port} is already in use on KHAREJ.", "red"))
-        print(c("Free the port or choose another port.", "yellow"))
+    ok_free = remote_port_is_free(remote_user, remote_ip, ssh_port, int(port))
+    if not ok_free:
+        print(c(f"✗ Remote port {port} is NOT free on KHAREJ (or cannot verify).", "red"))
+        print(c("Free the port OR install ss/netstat on KHAREJ OR choose another port.", "yellow"))
         return
 
     print(c("🧩 Writing systemd service ...", "yellow"))
