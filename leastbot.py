@@ -1,27 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-leastBOT - Reverse SSH Tunnel Manager (autossh + systemd)
-Developer: @leastping | mobin-shahhoseini
-Updates only in Telegram: https://t.me/leastping
-
-Scenario (SIMPLE - exactly like your steps):
-- KHAREJ: enable AllowTcpForwarding + GatewayPorts, open PORT
-- IRAN : autossh reverse tunnel (IRAN:PORT -> KHAREJ:PORT public)
-Goal: http://IP_KHAREJ:PORT/
-
-Notes:
-- Beautiful UI (logo/spinner/colors/emojis)
-- Daily auto update check (GitHub raw)
-- NO extra options (no bind choice, no separate local/remote ports)
-- All messages Finglish (no Persian script)
-"""
-
 import os
 import re
 import sys
 import time
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -31,7 +15,7 @@ from urllib.request import urlopen, Request
 # App / Repo
 # =========================
 __app__ = "leastBOT"
-__version__ = "1.0.1"
+__version__ = "1.1.3"
 
 GITHUB_REPO = "mobin-shahhoseini/leastBOT"
 BRANCH = "main"
@@ -135,21 +119,21 @@ def ask(prompt, default=None, validator=None):
 def valid_ip(s):
     parts = s.split(".")
     if len(parts) != 4:
-        return False, "IP na-motabar ast."
+        return False, "IP invalid."
     try:
         nums = [int(p) for p in parts]
     except Exception:
-        return False, "IP na-motabar ast."
+        return False, "IP invalid."
     if any(n < 0 or n > 255 for n in nums):
-        return False, "IP na-motabar ast."
+        return False, "IP invalid."
     return True, ""
 
 def valid_port(s):
     if not s.isdigit():
-        return False, "Port bayad adad bashad."
+        return False, "Port must be number."
     p = int(s)
     if p < 1 or p > 65535:
-        return False, "Port bayad beyn 1 ta 65535 bashad."
+        return False, "Port must be 1..65535."
     return True, ""
 
 def yesno(s: str) -> bool:
@@ -267,7 +251,6 @@ def ensure_key():
 
 def ssh_copy_id(user, host, ssh_port):
     print(c("🔐 Sending key to KHAREJ (password needed)...", "yellow"))
-    # Important: accept-new to avoid interactive "Are you sure..."
     run(
         f"ssh-copy-id -p {ssh_port} "
         f"-o StrictHostKeyChecking=accept-new "
@@ -288,35 +271,43 @@ def test_ssh(user, host, ssh_port):
     return "OK" in out
 
 # =========================
-# Robust remote port check (ss -> netstat fallback)
+# Robust remote port check (FIXED QUOTING)
 # =========================
 def remote_port_is_free(user, host, ssh_port, port: int) -> bool:
-    remote_cmd = (
-        "bash -lc '"
+    # Build remote script WITHOUT broken quotes (use shlex.quote)
+    remote_script = (
         "if command -v ss >/dev/null 2>&1; then "
-        f"  ss -H -lnt \"sport = :{port}\" | wc -l; "
+        f"  ss -H -lnt 'sport = :{port}' | wc -l; "
         "elif command -v netstat >/dev/null 2>&1; then "
-        f"  netstat -lnt 2>/dev/null | awk \"{{print \\$4}}\" | grep -E \"(:|\\.){port}$\" -c; "
+        f"  netstat -lnt 2>/dev/null | awk '{{print $4}}' | grep -E '(:|\\.){port}$' -c; "
         "else "
         "  echo 9999; "
-        "fi'"
+        "fi"
     )
+
     cmd = (
         f"ssh -p {ssh_port} "
         f"-o StrictHostKeyChecking=accept-new "
         f"-o UserKnownHostsFile=/root/.ssh/known_hosts "
         f"{user}@{host} "
-        f"\"{remote_cmd}\""
+        f"{shlex.quote(remote_script)}"
     )
+
     out = run(cmd, capture=True, check=False).strip()
-    try:
-        n = int(out)
-        if n == 9999:
-            # cannot verify -> be safe
-            return False
-        return n == 0
-    except Exception:
+
+    # Extract first integer from output (safe)
+    m = re.search(r"(\d+)", out)
+    if not m:
+        print(c("⚠ Remote port check returned non-numeric output:", "yellow"))
+        print(out if out else "(empty)")
         return False
+
+    n = int(m.group(1))
+    if n == 9999:
+        print(c("⚠ Cannot verify port on KHAREJ (no ss/netstat).", "yellow"))
+        return False
+
+    return n == 0
 
 # =========================
 # Firewall + sshd config on KHAREJ
@@ -398,14 +389,12 @@ def restart_ssh():
     run("systemctl restart sshd", check=False)
 
 # =========================
-# Systemd service on IRAN (FIXED - single line ExecStart)
+# Systemd service on IRAN (single-line ExecStart)
 # =========================
 def systemd_verify_unit_soft(path: str):
-    # Non-blocking verify: only show warning, never stop the flow
     if not shutil.which("systemd-analyze"):
         return
     out = run(f"systemd-analyze verify {path} 2>&1 || true", capture=True, check=False).strip()
-    # If there is something about our file, show it
     if out:
         print(c("ℹ systemd-analyze verify output (non-blocking):", "dim"))
         print(out)
@@ -413,7 +402,6 @@ def systemd_verify_unit_soft(path: str):
 def write_reverse_service(remote_user, remote_ip, ssh_port, port: int):
     autossh_path = shutil.which("autossh") or "/usr/bin/autossh"
 
-    # IMPORTANT: single-line ExecStart to avoid any "Missing '='" or newline bugs
     execstart = (
         f"{autossh_path} -M 0 -N "
         f"-o ServerAliveInterval=30 "
@@ -447,14 +435,11 @@ def write_reverse_service(remote_user, remote_ip, ssh_port, port: int):
     with open(tmp_path, "w", encoding="utf-8") as f:
         f.write(content)
 
-    # soft verify only (never blocks)
     systemd_verify_unit_soft(tmp_path)
 
-    # Backup old service
     if os.path.exists(SERVICE_PATH):
-        bkp = SERVICE_PATH + ".bak"
         try:
-            shutil.copy2(SERVICE_PATH, bkp)
+            shutil.copy2(SERVICE_PATH, SERVICE_PATH + ".bak")
         except Exception:
             pass
 
@@ -526,24 +511,18 @@ def mode_iran():
         return
 
     print(c("🔍 Checking remote port availability ...", "yellow"))
-    ok_free = remote_port_is_free(remote_user, remote_ip, ssh_port, int(port))
-    if not ok_free:
+    if not remote_port_is_free(remote_user, remote_ip, ssh_port, int(port)):
         print(c(f"✗ Remote port {port} is NOT free on KHAREJ (or cannot verify).", "red"))
-        print(c("Free the port OR install ss/netstat on KHAREJ OR choose another port.", "yellow"))
+        print(c("Free the port OR run KHAREJ setup (option 2) OR choose another port.", "yellow"))
         return
 
     print(c("🧩 Writing systemd service ...", "yellow"))
-    try:
-        write_reverse_service(remote_user, remote_ip, ssh_port, int(port))
-    except Exception as e:
-        print(c(f"✗ Service write failed: {e}", "red"))
-        return
+    write_reverse_service(remote_user, remote_ip, ssh_port, int(port))
 
     print(c("🚀 Enabling & starting service ...", "yellow"))
     enable_start_service()
 
     print(c("\n✅ Done!", "green"))
-    # IMPORTANT: final output ONLY IP:PORT
     print(c(f"{remote_ip}:{port}", "cyan"))
 
 def mode_status_logs():
