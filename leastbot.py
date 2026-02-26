@@ -4,14 +4,17 @@
 """
 leastBOT - Reverse SSH Tunnel Manager (autossh + systemd)
 Developer: @leastping | mobin-shahhoseini
-Updates: https://t.me/leastping
+Updates only in Telegram: https://t.me/leastping
 
-Scenario:
-- Kharj = Public server (entry)
-- Iran  = Client (creates reverse ssh tunnel to Kharj)
+Scenario (SIMPLE exactly like your steps):
+- KHAREJ: enable AllowTcpForwarding + GatewayPorts, open PORT
+- IRAN : autossh reverse tunnel (IRAN:PORT -> KHAREJ:PORT public)
+Goal: http://IP_KHAREJ:PORT/
 
-OS: Debian/Ubuntu (apt)
-Run as: root
+Notes:
+- Keeps beautiful UI (logo/spinner/colors/emojis)
+- Keeps daily auto update check (GitHub raw)
+- Removes extra options (no bind choice, no separate local/remote ports, no extra menus)
 """
 
 import os
@@ -23,15 +26,20 @@ import subprocess
 from pathlib import Path
 from urllib.request import urlopen, Request
 
+# =========================
+# App / Repo
+# =========================
 __app__ = "leastBOT"
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
-# GitHub self-update (optional)
 GITHUB_REPO = "mobin-shahhoseini/leastBOT"
 BRANCH = "main"
 RAW_MAIN_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{BRANCH}/leastbot.py"
 
 SERVICE_DIR = "/etc/systemd/system"
+SERVICE_NAME = "reverse-tunnel.service"
+SERVICE_PATH = f"{SERVICE_DIR}/{SERVICE_NAME}"
+
 CACHE_DIR = Path("/var/lib/leastbot")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -67,9 +75,9 @@ LOGO = rf"""
 └──────────────────────────────────────────────────────────────────────────────┘
 """
 
-# -------------------------
+# =========================
 # Utils
-# -------------------------
+# =========================
 def clear():
     os.system("clear" if os.name != "nt" else "cls")
 
@@ -87,11 +95,14 @@ def spinner(msg="Loading", seconds=0.9):
 def run(cmd, check=True, capture=False):
     print(c(f"\n$ {cmd}", "cyan"))
     if capture:
-        res = subprocess.run(cmd, shell=True, text=True,
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        res = subprocess.run(
+            cmd, shell=True, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        )
+        out = res.stdout or ""
         if check and res.returncode != 0:
-            raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout)
-        return (res.stdout or "")
+            raise subprocess.CalledProcessError(res.returncode, cmd, output=out)
+        return out
     res = subprocess.run(cmd, shell=True)
     if check and res.returncode != 0:
         raise subprocess.CalledProcessError(res.returncode, cmd)
@@ -139,9 +150,9 @@ def valid_port(s):
 def yesno(s: str) -> bool:
     return str(s).strip().lower().startswith("y")
 
-# -------------------------
-# Optional: self update
-# -------------------------
+# =========================
+# Auto Update (daily) - keep it
+# =========================
 def parse_version(v):
     try:
         return tuple(int(x) for x in v.strip().split("."))
@@ -174,19 +185,24 @@ def self_update(force=False):
 
         txt = fetch_url_text(RAW_MAIN_URL, timeout=12)
         mark_checked()
+
         m = re.search(r'__version__\s*=\s*"([^"]+)"', txt)
         if not m:
             return
         remote_ver = m.group(1).strip()
+
         if not force and parse_version(remote_ver) <= parse_version(__version__):
+            print(c(f"✓ Update: no new version. (local={__version__}, remote={remote_ver})", "dim"))
             return
 
-        print(c(f"New version available: {remote_ver} (local={__version__})", "yellow"))
-        if not yesno(ask("Update now? (y/n)", default="n")):
+        print(c(f"🆕 New version available: {remote_ver} (local={__version__})", "yellow"))
+        if not yesno(ask("Update now? (y/n)", default="y" if force else "n")):
+            print(c("Update canceled.", "yellow"))
             return
 
         installed_path = Path("/usr/local/bin/leastbot")
         script_path = installed_path if installed_path.exists() else Path(sys.argv[0]).resolve()
+
         if not script_path.exists():
             print(c("! Script path peyda nashod.", "red"))
             return
@@ -199,24 +215,23 @@ def self_update(force=False):
         tmp.chmod(script_path.stat().st_mode)
         tmp.replace(script_path)
 
-        print(c(f"✓ Updated. Backup: {backup}", "green"))
-        print(c("Restart script.", "cyan"))
+        print(c(f"✅ Updated successfully. Backup: {backup}", "green"))
+        print(c("Restart script to load new version.", "cyan"))
         sys.exit(0)
 
     except Exception as e:
         print(c(f"! Update error: {e}", "yellow"))
 
-# -------------------------
+# =========================
 # Install helpers
-# -------------------------
+# =========================
 def ensure_cmd(cmd_name, apt_pkg=None):
     if shutil.which(cmd_name):
         return
-    if apt_pkg is None:
-        apt_pkg = cmd_name
-    print(c(f"-> '{cmd_name}' peyda nashod, dar hale nasb: {apt_pkg}", "yellow"))
+    pkg = apt_pkg or cmd_name
+    print(c(f"📦 '{cmd_name}' not found, installing: {pkg}", "yellow"))
     run("apt update")
-    run(f"apt install -y {apt_pkg}")
+    run(f"apt install -y {pkg}")
 
 def ensure_basics_iran():
     ensure_cmd("ssh", "openssh-client")
@@ -228,10 +243,9 @@ def ensure_basics_iran():
 def ensure_basics_kharj():
     ensure_cmd("ss", "iproute2")
     if not shutil.which("sshd"):
-        print(c("! sshd peyda nashod. openssh-server nasb nist.", "yellow"))
-        if yesno(ask("Install openssh-server? (y/n)", default="y")):
-            run("apt update")
-            run("apt install -y openssh-server")
+        print(c("⚠ sshd not found. Installing openssh-server...", "yellow"))
+        run("apt update")
+        run("apt install -y openssh-server")
 
 def ensure_key():
     key_path = Path("/root/.ssh/id_ed25519")
@@ -241,13 +255,14 @@ def ensure_key():
     os.chmod(str(key_dir), 0o700)
 
     if key_path.exists() and pub_path.exists():
+        print(c("🔑 SSH key exists: /root/.ssh/id_ed25519", "green"))
         return
 
-    print(c("-> SSH key mojood nist, dar hale sakht (ed25519)...", "yellow"))
+    print(c("🔑 Creating SSH key (ed25519)...", "yellow"))
     run('ssh-keygen -t ed25519 -N "" -f /root/.ssh/id_ed25519')
 
 def ssh_copy_id(user, host, ssh_port):
-    print(c("-> Dar hale ersal key be Kharj (password mikhad)...", "yellow"))
+    print(c("🔐 Sending key to KHAREJ (password needed)...", "yellow"))
     run(f"ssh-copy-id -p {ssh_port} {user}@{host}", check=True)
 
 def test_ssh(user, host, ssh_port):
@@ -255,90 +270,27 @@ def test_ssh(user, host, ssh_port):
         f'ssh -p {ssh_port} -o StrictHostKeyChecking=accept-new {user}@{host} "echo OK"',
         capture=True,
         check=False,
-    )
-    return "OK" in (out or "")
+    ) or ""
+    return "OK" in out
 
-def remote_port_free(user, host, ssh_port, port, bind_host):
-    # Check if port is already LISTEN on remote
+# =========================
+# Robust remote port check (FIXED - no false positive)
+# =========================
+def remote_port_is_free(user, host, ssh_port, port: int) -> bool:
+    # Uses ss filter directly (no awk/grep regex pitfalls)
     cmd = (
         f'ssh -p {ssh_port} -o StrictHostKeyChecking=accept-new {user}@{host} '
-        f'"ss -lnt | awk \'{{print $4}}\' | grep -E \'^({bind_host}|\\*|0\\.0\\.0\\.0|\\[::\\]):{port}$\' >/dev/null; '
-        f'echo $?"'
+        f'"ss -H -lnt \\"sport = :{port}\\" | wc -l"'
     )
     out = run(cmd, capture=True, check=False).strip()
-    # out should be 0 if found, else 1 (or error)
-    return out != "0"
+    try:
+        return int(out) == 0
+    except Exception:
+        return False
 
-# -------------------------
-# Systemd service
-# -------------------------
-def service_name(remote_port, local_port, remote_ip):
-    safe_ip = remote_ip.replace(".", "-")
-    return f"leastbot-r{remote_port}-l{local_port}-{safe_ip}.service"
-
-def write_service_file(remote_user, remote_ip, ssh_port, local_port, remote_port, bind_public):
-    """
-    Reverse tunnel:
-    Iran(local):  127.0.0.1:local_port
-    Kharj(remote): bind_host:remote_port  (bind_host=0.0.0.0 if public else 127.0.0.1)
-    """
-    svc = service_name(remote_port, local_port, remote_ip)
-    service_path = f"{SERVICE_DIR}/{svc}"
-
-    bind_host = "0.0.0.0" if bind_public else "127.0.0.1"
-
-    # StartLimitIntervalSec belongs to [Unit], not [Service]
-    content = f"""[Unit]
-Description=leastBOT Reverse SSH Tunnel IR -> KHAREJ (R:{remote_port} -> L:{local_port})
-After=network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-User=root
-Environment="AUTOSSH_GATETIME=0"
-ExecStart=/usr/bin/autossh -M 0 -N \\
-  -o ServerAliveInterval=30 \\
-  -o ServerAliveCountMax=3 \\
-  -o ExitOnForwardFailure=yes \\
-  -o StrictHostKeyChecking=accept-new \\
-  -p {ssh_port} \\
-  -R {bind_host}:{remote_port}:127.0.0.1:{local_port} \\
-  {remote_user}@{remote_ip}
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-"""
-    print(c(f"-> Writing service: {service_path}", "yellow"))
-    with open(service_path, "w", encoding="utf-8") as f:
-        f.write(content)
-
-    return svc, bind_host
-
-def systemd_enable_start(svc):
-    run("systemctl daemon-reload")
-    run(f"systemctl enable --now {svc}")
-    run(f"systemctl status {svc} --no-pager", check=False)
-
-def systemd_stop_remove_by_name(svc):
-    run(f"systemctl disable --now {svc}", check=False)
-    path = f"{SERVICE_DIR}/{svc}"
-    if os.path.exists(path):
-        os.remove(path)
-        print(c(f"✓ Removed: {path}", "green"))
-    run("systemctl daemon-reload")
-
-def list_leastbot_services():
-    out = run("systemctl list-units --type=service --all | grep leastbot- || true",
-              capture=True, check=False)
-    return out.strip()
-
-# -------------------------
-# Firewall & sshd on Kharj
-# -------------------------
+# =========================
+# Firewall + sshd config on KHAREJ
+# =========================
 def detect_firewall():
     if shutil.which("ufw"):
         out = run("ufw status", capture=True, check=False) or ""
@@ -354,7 +306,7 @@ def detect_firewall():
 
 def open_port(port):
     fw = detect_firewall()
-    print(c(f"-> Firewall: {fw}", "yellow"))
+    print(c(f"🧱 Firewall detected: {fw}", "yellow"))
     if fw == "ufw":
         run(f"ufw allow {port}/tcp", check=False)
     elif fw == "firewalld":
@@ -366,14 +318,19 @@ def open_port(port):
             f"iptables -A INPUT -p tcp --dport {port} -j ACCEPT",
             check=False,
         )
-        print(c("! iptables rule added (may be lost after reboot).", "yellow"))
+        print(c("⚠ iptables rule added (may be lost after reboot).", "yellow"))
     else:
-        print(c("! No active firewall tool detected. If port is blocked upstream, open it there too.", "yellow"))
+        print(c("⚠ No firewall tool detected. If provider firewall exists, open port there too.", "yellow"))
 
-def ensure_sshd_config():
+def ensure_sshd_config_safe():
     path = "/etc/ssh/sshd_config"
     if not os.path.exists(path):
-        raise RuntimeError("File /etc/ssh/sshd_config peyda nashod.")
+        raise RuntimeError("File /etc/ssh/sshd_config not found.")
+
+    backup = path + ".leastbot.bak"
+    if not os.path.exists(backup):
+        shutil.copy2(path, backup)
+        print(c(f"🧷 Backup created: {backup}", "green"))
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         lines = f.readlines()
@@ -386,140 +343,141 @@ def ensure_sshd_config():
                 return
         lines.append(f"\n{key} {value}\n")
 
+    # EXACTLY your required lines:
     set_or_add("AllowTcpForwarding", "yes")
     set_or_add("GatewayPorts", "yes")
-    set_or_add("ClientAliveInterval", "30")
-    set_or_add("ClientAliveCountMax", "3")
 
-    backup = path + ".leastbot.bak"
-    if not os.path.exists(backup):
-        shutil.copy2(path, backup)
-        print(c(f"✓ Backup: {backup}", "green"))
-
-    with open(path, "w", encoding="utf-8") as f:
+    # write temp, validate, then replace (safe)
+    tmp = path + ".leastbot.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
-    print(c("✓ sshd_config updated (forwarding enabled).", "green"))
+    # validate
+    test_out = run(f"sshd -t -f {tmp} && echo OK || echo FAIL", capture=True, check=False).strip()
+    if "OK" not in test_out:
+        os.remove(tmp)
+        raise RuntimeError("sshd_config validation failed (sshd -t). No changes applied.")
+
+    shutil.copy2(tmp, path)
+    os.remove(tmp)
+    print(c("✅ sshd_config updated: AllowTcpForwarding/GatewayPorts", "green"))
 
 def restart_ssh():
     run("systemctl restart ssh", check=False)
     run("systemctl restart sshd", check=False)
 
-def check_listen(port):
-    out = run(f"ss -lntp | grep ':{port} ' || true", capture=True, check=False) or ""
-    if out.strip():
-        print(c(out.strip(), "green"))
-    else:
-        print(c(f"! No listen for :{port}", "yellow"))
+# =========================
+# Systemd service on IRAN (fixed & stable)
+# =========================
+def write_reverse_service(remote_user, remote_ip, ssh_port, port: int):
+    autossh_path = shutil.which("autossh") or "/usr/bin/autossh"
 
-# -------------------------
-# Menus
-# -------------------------
+    content = f"""[Unit]
+Description=Reverse SSH Tunnel IR -> KHAREJ ({port})
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+Environment="AUTOSSH_GATETIME=0"
+ExecStart={autossh_path} -M 0 -N \\
+  -o ServerAliveInterval=30 \\
+  -o ServerAliveCountMax=3 \\
+  -o ExitOnForwardFailure=yes \\
+  -o StrictHostKeyChecking=accept-new \\
+  -p {ssh_port} \\
+  -R 0.0.0.0:{port}:127.0.0.1:{port} \\
+  {remote_user}@{remote_ip}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+    with open(SERVICE_PATH, "w", encoding="utf-8") as f:
+        f.write(content)
+
+def enable_start_service():
+    run("systemctl daemon-reload")
+    run(f"systemctl enable --now {SERVICE_NAME}")
+    run(f"systemctl status {SERVICE_NAME} --no-pager", check=False)
+
+def remove_service():
+    run(f"systemctl disable --now {SERVICE_NAME}", check=False)
+    if os.path.exists(SERVICE_PATH):
+        os.remove(SERVICE_PATH)
+        print(c(f"🧹 Removed: {SERVICE_PATH}", "green"))
+    run("systemctl daemon-reload")
+
+# =========================
+# Modes (simple)
+# =========================
 def print_main_menu():
     print(c("\nMain Menu", "bold"))
     print(c("0) Exit", "dim"))
-    print("1) Iran   (Client)  [Create reverse tunnel service]")
-    print("2) Kharj  (Server)  [Enable forwarding + open port]")
+    print("1) Iran  (Client)  [Create Reverse Tunnel Service]")
+    print("2) Kharj (Server)  [Enable forwarding + open port]")
     print("3) Status / Logs")
     print("4) Remove Tunnel Service (Iran)")
     print("5) Check / Update (GitHub)")
-    print("6) List leastBOT services")
+
+def mode_kharj():
+    print(c("\n=== MODE: KHARJ (Server) ===", "bold"))
+    port = ask("Port to open on KHARJ (مثال: 2087)", validator=valid_port)
+
+    ensure_basics_kharj()
+    ensure_sshd_config_safe()
+    restart_ssh()
+    open_port(int(port))
+
+    print(c("\n✅ Done! Now go to IRAN and create the tunnel.", "green"))
+    print(c("Note: Port will LISTEN only after tunnel is up.", "dim"))
 
 def mode_iran():
     print(c("\n=== MODE: IRAN (Client) ===", "bold"))
-    print("Create reverse tunnel from Iran to Kharj.\n")
-
-    local_port  = ask("Local port on IRAN (x-ui panel port)", validator=valid_port)
-    remote_port = ask("Public port on KHARJ (what you will open)", validator=valid_port)
-    remote_ip   = ask("IP server KHARJ", validator=valid_ip)
+    # EXACTLY your steps: same port on IRAN and KHARJ
+    port = ask("Port panel (IRAN=KHARJ same) مثال: 2087", validator=valid_port)
+    remote_ip = ask("IP server KHARJ", validator=valid_ip)
     remote_user = ask("SSH user on KHARJ", default="root")
-    ssh_port    = ask("SSH port on KHARJ", default="22", validator=valid_port)
-    pub_choice  = ask("Bind on KHARJ public? (y=0.0.0.0 / n=127.0.0.1)", default="y")
-    bind_public = yesno(pub_choice)
+    ssh_port = ask("SSH port on KHARJ", default="22", validator=valid_port)
 
     ensure_basics_iran()
     ensure_key()
 
-    print(c("\nTip: On KHARJ run option 2 once to enable GatewayPorts + open firewall.", "yellow"))
-
+    print(c("\n🔁 Sending key...", "yellow"))
     ssh_copy_id(remote_user, remote_ip, ssh_port)
 
-    print(c("\n-> Testing SSH ...", "yellow"))
+    print(c("🧪 Testing SSH ...", "yellow"))
     if not test_ssh(remote_user, remote_ip, ssh_port):
         print(c("✗ SSH test failed. Fix SSH then retry.", "red"))
         return
 
-    bind_host = "0.0.0.0" if bind_public else "127.0.0.1"
-    print(c(f"\n-> Checking remote port {remote_port} availability on {remote_ip} ({bind_host}) ...", "yellow"))
-    if not remote_port_free(remote_user, remote_ip, ssh_port, remote_port, bind_host):
-        print(c(f"✗ Remote port {remote_port} is already in use on KHARJ. Choose another port.", "red"))
+    print(c("🔍 Checking remote port availability ...", "yellow"))
+    if not remote_port_is_free(remote_user, remote_ip, ssh_port, int(port)):
+        print(c(f"✗ Remote port {port} is already in use on KHARJ.", "red"))
+        print(c("Free the port or choose another port.", "yellow"))
         return
 
-    svc, bind_host = write_service_file(remote_user, remote_ip, ssh_port, int(local_port), int(remote_port), bind_public)
-    systemd_enable_start(svc)
+    print(c("🧩 Writing systemd service ...", "yellow"))
+    write_reverse_service(remote_user, remote_ip, ssh_port, int(port))
+
+    print(c("🚀 Enabling & starting service ...", "yellow"))
+    enable_start_service()
 
     print(c("\n✅ Done!", "green"))
-    # IMPORTANT: user requested ONLY IP + PORT, nothing else
-    print(c(f"http://{remote_ip}:{remote_port}", "cyan"))
-    print(c("Note: If your x-ui has webBasePath not '/', it may show 404 on root. Set webBasePath to '/' inside x-ui.", "yellow"))
-
-def mode_kharj():
-    print(c("\n=== MODE: KHARJ (Server) ===", "bold"))
-    print("Enable ssh forwarding + open a port in firewall.\n")
-
-    port = ask("Port to open on KHARJ", validator=valid_port)
-
-    ensure_basics_kharj()
-    ensure_sshd_config()
-    restart_ssh()
-    open_port(port)
-
-    print(c("\n--- Check ---", "bold"))
-    check_listen(port)
-
-    print(c("\n✅ Done! Test from outside:", "green"))
-    print(c(f"http://<IP_KHARJ>:{port}", "cyan"))
+    # IMPORTANT: user wants only IP:PORT at the end (no http://, no /, no basepath)
+    print(c(f"{remote_ip}:{port}", "cyan"))
 
 def mode_status_logs():
     print(c("\n=== STATUS / LOGS ===", "bold"))
-    out = list_leastbot_services()
-    if out:
-        print(c("\nActive/installed leastBOT services:", "dim"))
-        print(out)
+    run(f"systemctl status {SERVICE_NAME} --no-pager", check=False)
+    run(f"journalctl -u {SERVICE_NAME} -n 200 --no-pager", check=False)
 
-    svc = ask("Enter service name (example: leastbot-r2087-l2087-1-2-3-4.service)", validator=None)
-    print(c("\n[1] Service status", "bold"))
-    run(f"systemctl status {svc} --no-pager", check=False)
-
-    print(c("\n[2] Last logs (journalctl)", "bold"))
-    run(f"journalctl -u {svc} -n 200 --no-pager", check=False)
-
-def mode_remove_tunnel():
-    print(c("\n=== REMOVE TUNNEL (IRAN) ===", "bold"))
-    out = list_leastbot_services()
-    if out:
-        print(c("\nleastBOT services:", "dim"))
-        print(out)
-    svc = ask("Enter exact service name to remove", validator=None)
-    if not yesno(ask(f"Sure remove {svc}? (y/n)", default="n")):
-        print(c("Canceled.", "yellow"))
-        return
-    systemd_stop_remove_by_name(svc)
-    print(c("✅ Removed.", "green"))
-
-def mode_update():
-    print(c("\n=== UPDATE (GitHub) ===", "bold"))
-    print(c(f"Repo: {GITHUB_REPO}", "cyan"))
-    self_update(force=True)
-
-def mode_list():
-    print(c("\n=== LIST SERVICES ===", "bold"))
-    out = list_leastbot_services()
-    if out:
-        print(out)
-    else:
-        print(c("No leastBOT services found.", "yellow"))
-
+# =========================
+# Main
+# =========================
 def main():
     clear()
     print(LOGO)
@@ -528,15 +486,14 @@ def main():
         print(c("✗ Lotfan ba root ejra kon: sudo -i", "red"))
         return
 
-    spinner("Starting leastBOT", seconds=0.8)
+    spinner("Starting leastBOT", seconds=0.9)
 
-    # Daily silent update check (no prompt unless newer)
     print(c("Checking updates (daily)...", "dim"))
     self_update(force=False)
 
     while True:
         print_main_menu()
-        choice = input(c("\nSelect option [0-6]: ", "bold")).strip()
+        choice = input(c("\nSelect option [0-5]: ", "bold")).strip()
 
         if choice == "0":
             print(c("\nBye 👋  Updates: https://t.me/leastping\n", "cyan"))
@@ -548,11 +505,15 @@ def main():
         elif choice == "3":
             mode_status_logs()
         elif choice == "4":
-            mode_remove_tunnel()
+            confirm = ask("Are you sure to remove reverse-tunnel service? (y/n)", default="n")
+            if yesno(confirm):
+                remove_service()
+                print(c("✅ Removed.", "green"))
+            else:
+                print(c("Canceled.", "yellow"))
         elif choice == "5":
-            mode_update()
-        elif choice == "6":
-            mode_list()
+            print(c("\n=== UPDATE (GitHub) ===", "bold"))
+            self_update(force=True)
         else:
             print(c("✗ Option na-motabar.", "red"))
 
