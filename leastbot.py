@@ -15,7 +15,7 @@ from urllib.request import urlopen, Request
 # App / Repo
 # =========================
 __app__ = "leastBOT"
-__version__ = "1.1.3"
+__version__ = "1.0.1"
 
 GITHUB_REPO = "mobin-shahhoseini/leastBOT"
 BRANCH = "main"
